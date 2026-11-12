@@ -9,6 +9,7 @@
 #include <bitset>
 #include <chrono>
 #include <cstdlib>
+#include <string_view>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -598,7 +599,16 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         const auto arch = GetNvidiaArch();
         if (arch >= NvidiaArchitecture::Arch_AmpereOrNewer) {
             LOG_WARNING(Render_Vulkan, "Ampere and newer have broken float16 math");
-            features.shader_float16_int8.shaderFloat16 = false;
+            // EDEN_NX2_TENSOR_F16=1: keep the device feature for the tensor-core (cooperative
+            // matrix) path, which declares Float16 itself, while guest shaders still lower their
+            // half-precision math to float32 (IsFloat16Supported stays false for them).
+            const char* const tensor_f16 = std::getenv("EDEN_NX2_TENSOR_F16");
+            if (tensor_f16 && std::string_view{tensor_f16} == "1") {
+                guest_float16_broken = true;
+                LOG_INFO(Render_Vulkan, "float16 kept enabled for tensor-core shaders only");
+            } else {
+                features.shader_float16_int8.shaderFloat16 = false;
+            }
         }
 
         // Use hardware depth/stencil blits instead when available

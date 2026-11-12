@@ -477,6 +477,11 @@ FN_MAX_LIMIT_LIST
 
     /// Returns true if the device supports float16 natively.
     bool IsFloat16Supported() const {
+        return features.shader_float16_int8.shaderFloat16 && !guest_float16_broken;
+    }
+
+    /// True when the device feature is enabled, even where guest shaders may not use it.
+    bool IsFloat16FeatureEnabled() const {
         return features.shader_float16_int8.shaderFloat16;
     }
 
@@ -787,7 +792,7 @@ FN_MAX_LIMIT_LIST
     bool IsExtCooperativeMatrixSupported() const {
         return extensions.cooperative_matrix &&
                features.cooperative_matrix_features.cooperativeMatrix &&
-               IsFloat16Supported() && SupportedSpirvVersion() >= 0x00010400 &&
+               IsFloat16FeatureEnabled() && SupportedSpirvVersion() >= 0x00010400 &&
                cooperative_matrix_shape_supported &&
                extensions.subgroup_size_control &&
                features.subgroup_size_control.subgroupSizeControl &&
@@ -1394,6 +1399,7 @@ private:
     u64 device_access_memory{};                ///< Total size of device local memory in bytes.
     u32 sets_per_pool{};                       ///< Sets per Description Pool
     NvidiaArchitecture nvidia_arch{NvidiaArchitecture::Arch_AmpereOrNewer};
+    bool guest_float16_broken{}; ///< Float16 enabled for tensor shaders, not for guest math
 
     // Telemetry parameters
     std::set<std::string, std::less<>> supported_extensions; ///< Reported Vulkan extensions.

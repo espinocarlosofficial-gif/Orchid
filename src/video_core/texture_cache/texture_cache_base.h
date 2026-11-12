@@ -523,7 +523,7 @@ private:
     bool ImageCanRescale(ImageBase& image);
     void InvalidateScale(Image& image);
     bool ScaleUp(Image& image);
-    bool ScaleDown(Image& image);
+    bool ScaleDown(Image& image, const char* reason = nullptr, const ImageBase* blocker = nullptr);
     u64 GetScaledImageSizeBytes(const ImageBase& image);
 
     /// The device memory an image counts for in total_used_memory between two driver readings:

@@ -557,7 +557,9 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
                         continue;
                     }
                     auto& image = slot_images[image_view.image_id];
-                    has_blacklisted |= ScaleDown(image);
+                    has_blacklisted |= ScaleDown(
+                        image, compute ? "written as a storage image by a compute shader"
+                                       : "written as a storage image by a graphics shader");
                     image.scale_rating = 0;
                 }
             }
@@ -810,13 +812,19 @@ bool TextureCache<P>::RescaleRenderTargets() {
         scale_rating = 0;
         bool any_rescaled = false;
         bool can_rescale = true;
+        ImageId rt_blocker{CORRUPT_ID};
         const auto check_rescale = [&](ImageViewId view_id, ImageId& id_save) {
             if (view_id != NULL_IMAGE_VIEW_ID && view_id != ImageViewId{}) {
                 const auto& view = slot_image_views[view_id];
                 const auto image_id = view.image_id;
                 id_save = image_id;
                 auto& image = slot_images[image_id];
-                can_rescale &= ImageCanRescale(image);
+                if (!ImageCanRescale(image)) {
+                    if (can_rescale) {
+                        rt_blocker = image_id;
+                    }
+                    can_rescale = false;
+                }
                 any_rescaled |= True(image.flags & ImageFlagBits::Rescaled) ||
                                 GetFormatType(image.info.format) != SurfaceType::ColorTexture;
                 scale_rating = std::max<u32>(scale_rating, image.scale_tick <= frame_tick
@@ -857,10 +865,12 @@ bool TextureCache<P>::RescaleRenderTargets() {
             }
         } else {
             rescaled = false;
-            const auto scale_down = [this](ImageId image_id) {
+            const ImageBase* const blocker =
+                rt_blocker != CORRUPT_ID ? &slot_images[rt_blocker] : nullptr;
+            const auto scale_down = [this, blocker](ImageId image_id) {
                 if (image_id != CORRUPT_ID) {
                     Image& image = slot_images[image_id];
-                    ScaleDown(image);
+                    ScaleDown(image, "bound with a render target that cannot scale", blocker);
                 }
             };
             for (size_t index = 0; index < NUM_RT; ++index) {
@@ -1319,8 +1329,8 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     }
     if (is_resolve && (is_src_rescaled != is_dst_rescaled)) {
         // A resolve requires both images to be the same dimensions. Resize down if needed.
-        ScaleDown(src_image);
-        ScaleDown(dst_image);
+        ScaleDown(src_image, "MSAA resolve between scaled and native images");
+        ScaleDown(dst_image, "MSAA resolve between scaled and native images");
         is_src_rescaled = True(src_image.flags & ImageFlagBits::Rescaled);
         is_dst_rescaled = True(dst_image.flags & ImageFlagBits::Rescaled);
     }
@@ -2740,10 +2750,26 @@ bool TextureCache<P>::ScaleUp(Image& image) {
 }
 
 template <class P>
-bool TextureCache<P>::ScaleDown(Image& image) {
+bool TextureCache<P>::ScaleDown(Image& image, const char* reason, const ImageBase* blocker) {
     const bool rescaled = image.ScaleDown();
     if (!rescaled) {
         return false;
+    }
+    // EDEN_NX2_RESCALE_LOG=1: says which scaled image fell back to native resolution and why
+    // (the first 300, then every 1000th).
+    static const bool trace_rescale = std::getenv("EDEN_NX2_RESCALE_LOG") != nullptr;
+    if (trace_rescale && reason != nullptr) {
+        static u64 count{};
+        if (++count <= 300 || count % 1000 == 0) {
+            const auto describe = [](const ImageBase& img) {
+                return fmt::format("{:#x} {}x{} format {} levels {} layers {} rescaleable {}",
+                                   img.gpu_addr, img.info.size.width, img.info.size.height,
+                                   static_cast<u32>(img.info.format), img.info.resources.levels,
+                                   img.info.resources.layers, img.info.rescaleable);
+            };
+            LOG_INFO(HW_GPU, "Rescale down #{}: {}: {}{}", count, reason, describe(image),
+                     blocker ? fmt::format(" (blocked by {})", describe(*blocker)) : std::string{});
+        }
     }
     InvalidateScale(image);
     return true;
@@ -2889,7 +2915,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     } else {
         for (const auto& copy : join_copies_to_do) {
             Image& sibling = slot_images[copy.id];
-            ScaleDown(sibling);
+            ScaleDown(sibling, "joined into a new image that cannot scale");
         }
     }
 
@@ -3035,7 +3061,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     if (can_rescale) {
         ScaleUp(new_image);
     } else {
-        ScaleDown(new_image);
+        ScaleDown(new_image, "new image made from images that cannot scale");
     }
 
     std::ranges::sort(join_copies_to_do, [this](const JoinCopy& lhs, const JoinCopy& rhs) {
@@ -4150,7 +4176,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         if (can_rescale) {
             ScaleUp(image);
         } else {
-            ScaleDown(image);
+            ScaleDown(image, "cannot scale, but shares memory with a scaled image");
         }
     }
     image.modification_tick = most_recent_tick;
@@ -4171,7 +4197,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         }
         Image& aliased_image = slot_images[aliased->id];
         if (!can_rescale) {
-            ScaleDown(aliased_image);
+            ScaleDown(aliased_image, "shares memory with an image that cannot scale", &image);
             CopyImage(image_id, aliased->id, aliased->copies);
             continue;
         }

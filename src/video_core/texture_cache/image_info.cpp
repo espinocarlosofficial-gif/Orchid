@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -29,7 +30,17 @@ using Tegra::Texture::TICEntry;
 using VideoCore::Surface::PixelFormat;
 using VideoCore::Surface::SurfaceType;
 
-constexpr u32 RescaleHeightThreshold = 288;
+// Images this tall or shorter are never resolution scaled (Switch 1 games render around 720p).
+// EDEN_NX2_RESCALE_MIN_HEIGHT=<rows> lowers it for titles that render lower, such as 960x540 with
+// half-resolution 270-row passes.
+const u32 RescaleHeightThreshold = [] {
+    const char* const value = std::getenv("EDEN_NX2_RESCALE_MIN_HEIGHT");
+    if (value == nullptr) {
+        return 288U;
+    }
+    const unsigned long rows = std::strtoul(value, nullptr, 10);
+    return rows > 0 && rows < 4096 ? static_cast<u32>(rows) : 288U;
+}();
 constexpr u32 DownscaleHeightThreshold = 512;
 
 ImageInfo::ImageInfo(const TICEntry& config) noexcept {
